@@ -1,39 +1,14 @@
-import pandas as pd
+import argparse
 from pathlib import Path
 from datetime import date, datetime
+import shutil
+import pandas as pd
 
 # ---------- CONFIG ----------
 MASTER_FILE = Path("data/master_attendance.xlsx")
 SHEET_NAME = "Attendance"
-
-# Change these two when you run for a new day
-TODAY_STR = "2025-11-27"  # e.g. "2025-11-29"
-DAILY_FILE = Path("data/daily_2025-11-27.csv")
+BACKUP_DIR = Path("backups")
 # ----------------------------
-
-
-def normalize_column_name(col) -> str:
-    """
-    Make sure column names are clean strings like '2025-11-27',
-    not '2025-11-27 00:00:00' or Timestamp objects.
-    """
-    # If it's a pandas Timestamp or datetime/date → format as YYYY-MM-DD
-    if isinstance(col, (pd.Timestamp, datetime, date)):
-        return col.strftime("%Y-%m-%d")
-
-    col_str = str(col).strip()
-
-    # If it looks like 'YYYY-MM-DD 00:00:00' → keep only date part
-    if " " in col_str and col_str[:10].count("-") == 2:
-        # try to parse first part as a date
-        first_part = col_str.split(" ")[0]
-        try:
-            datetime.strptime(first_part, "%Y-%m-%d")
-            return first_part
-        except ValueError:
-            pass
-
-    return col_str
 
 
 def load_master(path: Path, sheet_name: str) -> pd.DataFrame:
@@ -41,37 +16,10 @@ def load_master(path: Path, sheet_name: str) -> pd.DataFrame:
         raise FileNotFoundError(f"Master file not found: {path}")
 
     df = pd.read_excel(path, sheet_name=sheet_name)
-
-    # Normalize all column names once when loading
-    df.columns = [normalize_column_name(c) for c in df.columns]
-
     required_cols = {"Roll_No", "Name"}
     if not required_cols.issubset(df.columns):
         raise ValueError(f"Master sheet must contain columns: {required_cols}")
     return df
-
-from openpyxl import load_workbook
-
-def autofit_columns(excel_file, sheet_name):
-    wb = load_workbook(excel_file)
-    ws = wb[sheet_name]
-
-    for column_cells in ws.columns:
-        max_length = 0
-        column_letter = column_cells[0].column_letter  # A, B, C...
-
-        for cell in column_cells:
-            try:
-                cell_value = str(cell.value)
-                if cell_value:
-                    max_length = max(max_length, len(cell_value))
-            except:
-                pass
-
-        adjusted_width = max_length + 2  # extra padding
-        ws.column_dimensions[column_letter].width = adjusted_width
-
-    wb.save(excel_file)
 
 
 def load_daily(path: Path) -> set:
@@ -85,9 +33,6 @@ def load_daily(path: Path) -> set:
 
 
 def update_attendance(master_df: pd.DataFrame, present_set: set, date_col: str) -> pd.DataFrame:
-    # Normalize the date column name
-    date_col = normalize_column_name(date_col)
-
     # Add date column if it doesn't exist
     if date_col not in master_df.columns:
         master_df[date_col] = ""
@@ -99,10 +44,12 @@ def update_attendance(master_df: pd.DataFrame, present_set: set, date_col: str) 
     master_df[date_col] = master_df.apply(mark, axis=1)
 
     # Identify date columns (exclude fixed ones)
-    base_columns = ["Roll_No", "Name", "Total_Present", "Percentage"]
-    date_columns = [col for col in master_df.columns if col not in base_columns]
+    date_columns = [
+        col for col in master_df.columns
+        if col not in ["Roll_No", "Name", "Total_Present", "Percentage"]
+    ]
 
-    # Count P for each row across all date columns
+    # Count P for each row
     master_df["Total_Present"] = (master_df[date_columns] == "P").sum(axis=1)
 
     # Total number of classes = number of date columns
@@ -115,29 +62,84 @@ def update_attendance(master_df: pd.DataFrame, present_set: set, date_col: str) 
     return master_df
 
 
-def save_master(df: pd.DataFrame, path: Path, sheet_name: str):
-    # Normalize columns again before saving (in case new ones were added)
-    df.columns = [normalize_column_name(c) for c in df.columns]
+def backup_master(master_path: Path, backup_dir: Path):
+    """
+    Create a timestamped backup of the master file in backup_dir.
+    Example: backups/master_attendance_2025-11-28_134501.xlsx
+    """
+    if not master_path.exists():
+        print(f"No master file found at {master_path}, skipping backup.")
+        return
 
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    backup_name = f"{master_path.stem}_{timestamp}{master_path.suffix}"
+    backup_path = backup_dir / backup_name
+
+    shutil.copy2(master_path, backup_path)
+    print(f"Backup created at: {backup_path}")
+
+
+def save_master(df: pd.DataFrame, path: Path, sheet_name: str):
     with pd.ExcelWriter(path, engine="openpyxl", mode="w") as writer:
         df.to_excel(writer, index=False, sheet_name=sheet_name)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Automate attendance updates in an Excel master sheet."
+    )
+    parser.add_argument(
+        "--date",
+        required=False,
+        help="Date for attendance in YYYY-MM-DD format. Default: today.",
+    )
+    parser.add_argument(
+        "--daily",
+        required=False,
+        help="Path to daily CSV file containing present students (column: Roll_No). "
+             "Default: data/daily_<date>.csv",
+    )
+    args = parser.parse_args()
+
+    # Handle default date = today
+    if args.date is None:
+        today = date.today()
+        date_str = today.isoformat()  # YYYY-MM-DD
+    else:
+        date_str = args.date
+
+    # Handle default daily path = data/daily_<date>.csv
+    if args.daily is None:
+        daily_path = Path(f"data/daily_{date_str}.csv")
+    else:
+        daily_path = Path(args.daily)
+
+    return date_str, daily_path
+
+
 def main():
+    # Parse CLI arguments
+    date_str, daily_file = parse_args()
+
+    print(f"Using date: {date_str}")
+    print(f"Using daily file: {daily_file}")
+
     print("Loading master attendance...")
     master_df = load_master(MASTER_FILE, SHEET_NAME)
 
     print("Loading today's present students...")
-    present_set = load_daily(DAILY_FILE)
+    present_set = load_daily(daily_file)
 
-    print(f"Updating attendance for {TODAY_STR} ...")
-    updated_df = update_attendance(master_df, present_set, TODAY_STR)
+    print("Creating backup of master file...")
+    backup_master(MASTER_FILE, BACKUP_DIR)
+
+    print(f"Updating attendance for {date_str} ...")
+    updated_df = update_attendance(master_df, present_set, date_str)
 
     print("Saving updated master file...")
     save_master(updated_df, MASTER_FILE, SHEET_NAME)
-
-    print("Auto-fitting column widths...")
-    autofit_columns(MASTER_FILE, SHEET_NAME)
 
     print("Done. Master sheet updated.")
 
