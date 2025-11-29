@@ -2,7 +2,9 @@ import argparse
 from pathlib import Path
 from datetime import date, datetime
 import shutil
+
 import pandas as pd
+from openpyxl import load_workbook
 
 # ---------- CONFIG ----------
 MASTER_FILE = Path("data/master_attendance.xlsx")
@@ -43,10 +45,14 @@ def update_attendance(master_df: pd.DataFrame, present_set: set, date_col: str) 
 
     master_df[date_col] = master_df.apply(mark, axis=1)
 
-    # Identify date columns (exclude fixed ones)
+    # Fixed columns
+    fixed_start = ["Roll_No", "Name"]
+    fixed_end = ["Total_Present", "Percentage"]
+
+    # Identify date columns (everything except fixed ones)
     date_columns = [
         col for col in master_df.columns
-        if col not in ["Roll_No", "Name", "Total_Present", "Percentage"]
+        if col not in fixed_start + fixed_end
     ]
 
     # Count P for each row
@@ -59,7 +65,26 @@ def update_attendance(master_df: pd.DataFrame, present_set: set, date_col: str) 
     else:
         master_df["Percentage"] = 0.0
 
+    # ---- REORDER COLUMNS HERE ----
+    # Current order might be: Roll_No, Name, 2025-11-27, Total_Present, Percentage, 2025-11-28
+    # We want: Roll_No, Name, all dates..., Total_Present, Percentage
+
+    cols = list(master_df.columns)
+
+    # Temporarily remove ending fixed columns
+    for col in fixed_end:
+        if col in cols:
+            cols.remove(col)
+
+    # Add them back at the end
+    cols += [col for col in fixed_end if col in master_df.columns]
+
+    # Reorder DataFrame
+    master_df = master_df[cols]
+    # --------------------------------
+
     return master_df
+
 
 
 def backup_master(master_path: Path, backup_dir: Path):
@@ -86,6 +111,28 @@ def save_master(df: pd.DataFrame, path: Path, sheet_name: str):
         df.to_excel(writer, index=False, sheet_name=sheet_name)
 
 
+def autofit_columns(excel_path: Path, sheet_name: str):
+    """Auto-adjust column widths after writing the Excel file."""
+    wb = load_workbook(excel_path)
+    ws = wb[sheet_name]
+
+    for col in ws.columns:
+        max_length = 0
+        column = col[0].column_letter  # 'A', 'B', ...
+
+        for cell in col:
+            try:
+                value = str(cell.value) if cell.value is not None else ""
+                if len(value) > max_length:
+                    max_length = len(value)
+            except Exception:
+                pass
+
+        ws.column_dimensions[column].width = max_length + 2
+
+    wb.save(excel_path)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Automate attendance updates in an Excel master sheet."
@@ -103,19 +150,20 @@ def parse_args():
     )
     args = parser.parse_args()
 
-    # Handle default date = today
+    # Default date = today
     if args.date is None:
         today = date.today()
         date_str = today.isoformat()  # YYYY-MM-DD
     else:
         date_str = args.date
 
-    # Handle default daily path = data/daily_<date>.csv
+    # Default daily path = data/daily_<date>.csv
     if args.daily is None:
         daily_path = Path(f"data/daily_{date_str}.csv")
     else:
         daily_path = Path(args.daily)
 
+    # THIS RETURN IS CRITICAL
     return date_str, daily_path
 
 
@@ -140,6 +188,9 @@ def main():
 
     print("Saving updated master file...")
     save_master(updated_df, MASTER_FILE, SHEET_NAME)
+
+    print("Auto-adjusting column widths...")
+    autofit_columns(MASTER_FILE, SHEET_NAME)
 
     print("Done. Master sheet updated.")
 
