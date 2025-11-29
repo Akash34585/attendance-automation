@@ -1,0 +1,12 @@
+# Python cache files
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+env/
+venv/
+
+# Excel or CSV data files (if they contain real sensitive data)
+data/*.xlsx
+data/*.csv
