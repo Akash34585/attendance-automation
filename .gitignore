@@ -7,6 +7,13 @@ __pycache__/
 env/
 venv/
 
-# Excel or CSV data files (if they contain real sensitive data)
-data/*.xlsx
-data/*.csv
+# Ignore real files
+data/master_attendance.xlsx
+data/daily_*.csv
+
+# But DO NOT ignore sample files
+!data/sample_master.xlsx
+!data/sample_daily.csv
+
+
+backups/*
